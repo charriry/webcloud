@@ -36,6 +36,7 @@ def save_config(config):
         json.dump(safe_cfg, f, ensure_ascii=False, indent=2)
 
 def load_conversations_data():
+    # Server-side persistence is deprecated; keep for backward compatibility only.
     if os.path.exists(CONVERSATIONS_FILE):
         try:
             with open(CONVERSATIONS_FILE, 'r', encoding='utf-8') as f:
@@ -44,9 +45,10 @@ def load_conversations_data():
             return {}
     return {}
 
-def save_conversations_data(data):
-    with open(CONVERSATIONS_FILE, 'w', encoding='utf-8') as f:
-        json.dump(data, f, ensure_ascii=False, indent=2)
+def save_conversations_data(_data):
+    # No-op to avoid storing any user content on the server.
+    # This intentionally disables server-side conversation persistence.
+    return
 
 @app.route('/')
 def index():
@@ -98,40 +100,26 @@ def debug_env():
 
 @app.route('/api/conversations', methods=['GET'])
 def get_conversations():
-    data = load_conversations_data()
-    conv_list = []
-    for cid, cdata in data.items():
-        conv_list.append({
-            'id': cid,
-            'title': cdata.get('title', 'New Chat'),
-            'updated_at': cdata.get('updated_at', '')
-        })
-    # Sort by updated_at descending
-    conv_list.sort(key=lambda x: x['updated_at'], reverse=True)
-    return jsonify(conv_list)
+    # Deprecated on server: conversations are stored client-side now.
+    return jsonify([])
 
 @app.route('/api/conversations/<conversation_id>', methods=['GET'])
 def get_conversation(conversation_id):
-    data = load_conversations_data()
-    if conversation_id in data:
-        return jsonify(data[conversation_id])
-    return jsonify({"error": "Conversation not found"}), 404
+    # Deprecated on server: conversations are stored client-side now.
+    return jsonify({"error": "Conversation storage is client-side now"}), 410
 
 @app.route('/api/conversations/<conversation_id>', methods=['DELETE'])
 def delete_conversation(conversation_id):
-    data = load_conversations_data()
-    if conversation_id in data:
-        del data[conversation_id]
-        save_conversations_data(data)
-        return jsonify({"status": "success"})
-    return jsonify({"error": "Conversation not found"}), 404
+    # Deprecated on server: conversations are stored client-side now.
+    return jsonify({"error": "Conversation storage is client-side now"}), 410
 
 @app.route('/api/chat', methods=['POST'])
 def chat():
-    data = request.json
+    data = request.json or {}
     user_message = data.get('message')
-    conversation_id = data.get('conversation_id')
-    
+    client_messages = data.get('messages')  # preferred: full history including the new user msg
+    conversation_id = data.get('conversation_id')  # echoed back if provided
+
     config = load_config()
     api_key = config.get('api_key')
     model = config.get('model', 'qwen-turbo')
@@ -153,30 +141,21 @@ def chat():
             return jsonify({"error": "请先在设置页面或环境变量中配置 API Key"}), 400
 
     dashscope.api_key = api_key
-    
-    # Load conversations
-    conversations_data = load_conversations_data()
-    
-    if conversation_id and conversation_id in conversations_data:
-        current_conv = conversations_data[conversation_id]
-    else:
-        # Create new conversation
-        conversation_id = str(uuid.uuid4())
-        title = user_message[:30] + "..." if len(user_message) > 30 else user_message
-        current_conv = {
-            "id": conversation_id,
-            "title": title,
-            "created_at": datetime.now().isoformat(),
-            "updated_at": datetime.now().isoformat(),
-            "messages": []
-        }
-        conversations_data[conversation_id] = current_conv
 
-    # Prepare messages for API
+    # Build message list: prefer client-provided full history
     messages = []
-    for msg in current_conv['messages']:
-        messages.append({'role': msg['role'], 'content': msg['content']})
-    messages.append({'role': 'user', 'content': user_message})
+    if isinstance(client_messages, list) and all(isinstance(m, dict) for m in client_messages):
+        # Basic shape validation
+        for m in client_messages:
+            role = m.get('role')
+            content = m.get('content')
+            if not isinstance(role, str) or not isinstance(content, str):
+                return jsonify({"error": "messages 中的每条消息必须包含字符串类型的 role 与 content"}), 400
+        messages = client_messages
+    elif isinstance(user_message, str) and user_message.strip():
+        messages = [{'role': 'user', 'content': user_message.strip()}]
+    else:
+        return jsonify({"error": "缺少消息内容。请提供 messages（推荐）或 message"}), 400
 
     try:
         response = dashscope.Generation.call(
@@ -184,29 +163,20 @@ def chat():
             messages=messages,
             result_format='message',
         )
-        
+
         if response.status_code == 200:
             assistant_content = response.output.choices[0].message.content
-            
-            # Update conversation data
-            current_conv['messages'].append({'role': 'user', 'content': user_message})
-            current_conv['messages'].append({'role': 'assistant', 'content': assistant_content})
-            current_conv['updated_at'] = datetime.now().isoformat()
-            
-            save_conversations_data(conversations_data)
-            
             return jsonify({
                 "response": assistant_content,
                 "role": "assistant",
-                "conversation_id": conversation_id,
-                "title": current_conv['title']
+                "conversation_id": conversation_id
             })
         else:
             return jsonify({"error": f"API Error: {response.code} - {response.message}"}), 500
-            
+
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
 if __name__ == '__main__':
-    app.run(debug=False, port=5000)
+    app.run(host='0.0.0.0',debug=False, port=5000)
 # ...existing code...

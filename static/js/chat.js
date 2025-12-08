@@ -7,6 +7,52 @@ document.addEventListener('DOMContentLoaded', () => {
 
     let currentConversationId = null;
 
+    // Client-side storage key
+    const STORAGE_KEY = 'webcloud.conversations';
+
+    // Simple UUID generator (not cryptographically strong)
+    function uuidv4() {
+        return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function(c) {
+            const r = Math.random() * 16 | 0, v = c === 'x' ? r : (r & 0x3 | 0x8);
+            return v.toString(16);
+        });
+    }
+
+    function readStore() {
+        try {
+            const raw = localStorage.getItem(STORAGE_KEY);
+            if (!raw) return {};
+            const parsed = JSON.parse(raw);
+            return typeof parsed === 'object' && parsed ? parsed : {};
+        } catch (_) {
+            return {};
+        }
+    }
+
+    function writeStore(obj) {
+        try {
+            localStorage.setItem(STORAGE_KEY, JSON.stringify(obj));
+        } catch (_) {}
+    }
+
+    function getConversation(id) {
+        const store = readStore();
+        return store[id] || null;
+    }
+
+    function upsertConversation(conv) {
+        const store = readStore();
+        store[conv.id] = conv;
+        writeStore(store);
+    }
+
+    function listConversations() {
+        const store = readStore();
+        return Object.values(store)
+            .map(c => ({ id: c.id, title: c.title || 'New Chat', updated_at: c.updated_at || '' }))
+            .sort((a, b) => (b.updated_at || '').localeCompare(a.updated_at || ''));
+    }
+
     // Auto-resize textarea
     userInput.addEventListener('input', function() {
         this.style.height = 'auto';
@@ -186,54 +232,31 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     async function loadConversations() {
-        try {
-            const response = await fetch('/api/conversations');
-            const conversations = await response.json();
-            
-            historyList.innerHTML = '';
-            conversations.forEach(conv => {
-                const item = document.createElement('div');
-                item.className = 'history-item';
-                if (conv.id === currentConversationId) {
-                    item.classList.add('active');
-                }
-                item.innerHTML = `
-                    <svg stroke="currentColor" fill="none" stroke-width="2" viewBox="0 0 24 24" stroke-linecap="round" stroke-linejoin="round" height="16" width="16" xmlns="http://www.w3.org/2000/svg"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"></path></svg>
-                    ${conv.title}
-                `;
-                item.addEventListener('click', () => loadConversation(conv.id));
-                historyList.appendChild(item);
-            });
-        } catch (error) {
-            console.error('Failed to load conversations:', error);
-        }
+        const conversations = listConversations();
+        historyList.innerHTML = '';
+        conversations.forEach(conv => {
+            const item = document.createElement('div');
+            item.className = 'history-item';
+            if (conv.id === currentConversationId) {
+                item.classList.add('active');
+            }
+            item.innerHTML = `
+                <svg stroke="currentColor" fill="none" stroke-width="2" viewBox="0 0 24 24" stroke-linecap="round" stroke-linejoin="round" height="16" width="16" xmlns="http://www.w3.org/2000/svg"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"></path></svg>
+                ${conv.title}
+            `;
+            item.addEventListener('click', () => loadConversation(conv.id));
+            historyList.appendChild(item);
+        });
     }
 
     async function loadConversation(id) {
         if (currentConversationId === id) return;
-        
-        try {
-            const response = await fetch(`/api/conversations/${id}`);
-            const data = await response.json();
-            
-            if (data.error) {
-                console.error(data.error);
-                return;
-            }
-
-            currentConversationId = id;
-            chatContainer.innerHTML = ''; // Clear current chat
-            
-            data.messages.forEach(msg => {
-                appendMessage(msg.role, msg.content);
-            });
-            
-            // Update active state in sidebar
-            loadConversations();
-            
-        } catch (error) {
-            console.error('Failed to load conversation:', error);
-        }
+        const conv = getConversation(id);
+        if (!conv) return;
+        currentConversationId = id;
+        chatContainer.innerHTML = '';
+        conv.messages.forEach(msg => appendMessage(msg.role, msg.content));
+        loadConversations();
     }
 
     function startNewChat() {
@@ -252,32 +275,51 @@ document.addEventListener('DOMContentLoaded', () => {
 
         const loadingMsg = showLoading();
 
+        // Ensure conversation exists locally and update local store with user msg
+        let conv = currentConversationId ? getConversation(currentConversationId) : null;
+        if (!conv) {
+            const newId = uuidv4();
+            conv = {
+                id: newId,
+                title: text.length > 30 ? text.slice(0, 30) + '...' : text,
+                created_at: new Date().toISOString(),
+                updated_at: new Date().toISOString(),
+                messages: []
+            };
+            currentConversationId = newId;
+        }
+        conv.messages.push({ role: 'user', content: text });
+        conv.updated_at = new Date().toISOString();
+        upsertConversation(conv);
+        loadConversations();
+
+        // Build full history to send (including the new user message)
+        const historyToSend = conv.messages.map(m => ({ role: m.role, content: m.content }));
+
         try {
             const response = await fetch('/api/chat', {
                 method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json'
-                },
+                headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
-                    message: text,
-                    conversation_id: currentConversationId
+                    conversation_id: currentConversationId,
+                    messages: historyToSend
                 })
             });
 
             const data = await response.json();
-            
+
             if (loadingMsg && loadingMsg.parentNode) {
                 loadingMsg.parentNode.removeChild(loadingMsg);
             }
 
             if (response.ok) {
                 appendMessage('assistant', data.response);
-                
-                // If this was a new chat, update the ID and reload sidebar to show new title
-                if (!currentConversationId || currentConversationId !== data.conversation_id) {
-                    currentConversationId = data.conversation_id;
-                    loadConversations();
-                }
+                // Save assistant reply locally
+                const updated = getConversation(currentConversationId) || conv;
+                updated.messages.push({ role: 'assistant', content: data.response });
+                updated.updated_at = new Date().toISOString();
+                upsertConversation(updated);
+                loadConversations();
             } else {
                 appendMessage('assistant', `Error: ${data.error}`);
             }
