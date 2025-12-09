@@ -1,5 +1,5 @@
 # ...existing code...
-from flask import Flask, render_template, request, jsonify
+from flask import Flask, render_template, request, jsonify, session
 import dashscope
 import json
 import os
@@ -8,12 +8,24 @@ from datetime import datetime
 
 app = Flask(__name__)
 
+# Configure secret key for session encryption
+# In production, this should be set via environment variable
+app.config['SECRET_KEY'] = os.environ.get('FLASK_SECRET_KEY', os.urandom(24).hex())
+
 CONFIG_FILE = 'config.json'
 CONVERSATIONS_FILE = 'conversations.json'
 
 def load_config():
-    # Load model from config file, but always prefer environment variables for secrets/config
+    """
+    Load configuration with the following priority (highest to lowest):
+    1. User session (per-user settings)
+    2. Environment variables (global settings)
+    3. Config file (global settings)
+    4. Default values
+    """
     cfg = {"api_key": "", "model": "qwen-turbo"}
+    
+    # Load from config file (lowest priority)
     if os.path.exists(CONFIG_FILE):
         try:
             with open(CONFIG_FILE, 'r') as f:
@@ -22,18 +34,33 @@ def load_config():
         except Exception:
             pass
 
-    # API key MUST come from environment variable if present
-    cfg['api_key'] = os.environ.get('ALI_QW_API_KEY', cfg.get('api_key', ''))
-    # Allow overriding model via environment too
-    cfg['model'] = os.environ.get('ALI_QW_MODEL', cfg.get('model', 'qwen-turbo'))
+    # Check environment variables (medium priority)
+    env_api_key = os.environ.get('ALI_QW_API_KEY')
+    env_model = os.environ.get('ALI_QW_MODEL')
+    if env_api_key:
+        cfg['api_key'] = env_api_key
+    if env_model:
+        cfg['model'] = env_model
+    
+    # Check user session (highest priority - per-user override)
+    session_api_key = session.get('api_key')
+    session_model = session.get('model')
+    if session_api_key:
+        cfg['api_key'] = session_api_key
+    if session_model:
+        cfg['model'] = session_model
+    
     return cfg
 
 def save_config(config):
-    # Only persist non-secret settings (like model) to disk.
-    # We avoid saving API keys to disk here.
-    safe_cfg = {k: v for k, v in config.items() if k != 'api_key'}
-    with open(CONFIG_FILE, 'w') as f:
-        json.dump(safe_cfg, f, ensure_ascii=False, indent=2)
+    """
+    Save configuration to user session (per-user settings).
+    We no longer save to disk to avoid sharing settings across users.
+    """
+    if 'api_key' in config:
+        session['api_key'] = config['api_key']
+    if 'model' in config:
+        session['model'] = config['model']
 
 def load_conversations_data():
     # Server-side persistence is deprecated; keep for backward compatibility only.
@@ -65,14 +92,13 @@ def api_settings():
         api_key = data.get('api_key')
         model = data.get('model')
 
-        # Set API key into environment for current process only
+        # Store API key and model in user session (per-user settings)
+        config = {}
         if api_key:
-            os.environ['ALI_QW_API_KEY'] = api_key
-
-        # Persist model selection to config.json
-        config = load_config()
+            config['api_key'] = api_key
         if model:
             config['model'] = model
+        
         save_config(config)
 
         return jsonify({"status": "success"})
@@ -90,6 +116,8 @@ def debug_env():
     flags = {
         "ALI_QW_API_KEY_in_os_environ": bool(os.environ.get('ALI_QW_API_KEY')),
         "ALI_QW_MODEL_in_os_environ": bool(os.environ.get('ALI_QW_MODEL')),
+        "api_key_in_session": bool(session.get('api_key')),
+        "model_in_session": bool(session.get('model')),
     }
     try:
         sdk_key = getattr(dashscope, 'api_key', None)
