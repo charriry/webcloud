@@ -56,22 +56,15 @@ def load_config():
     
     return cfg
 
-def save_config(config):
+def _update_session_value(key, value):
     """
-    Save configuration to user session (per-user settings).
-    We no longer save to disk to avoid sharing settings across users.
-    Note: This function is kept for backward compatibility but is no longer used internally.
+    Helper function to update or clear a session value.
+    Empty string clears the value from session.
     """
-    if 'api_key' in config:
-        if config['api_key']:
-            session['api_key'] = config['api_key']
-        else:
-            session.pop('api_key', None)
-    if 'model' in config:
-        if config['model']:
-            session['model'] = config['model']
-        else:
-            session.pop('model', None)
+    if value:
+        session[key] = value
+    else:
+        session.pop(key, None)
 
 def load_conversations_data():
     # Server-side persistence is deprecated; keep for backward compatibility only.
@@ -103,24 +96,13 @@ def api_settings():
         
         # Store API key and model in user session (per-user settings)
         # Support partial updates: only update fields that are provided
+        # Empty string clears the value from session
         
-        # Handle API key: accept empty string to clear, or non-empty to set
         if 'api_key' in data:
-            api_key = data['api_key']
-            if api_key:
-                session['api_key'] = api_key
-            else:
-                # Clear API key from session if empty string is provided
-                session.pop('api_key', None)
+            _update_session_value('api_key', data['api_key'])
         
-        # Handle model: accept empty string to clear, or non-empty to set
         if 'model' in data:
-            model = data['model']
-            if model:
-                session['model'] = model
-            else:
-                # Clear model from session if empty string is provided
-                session.pop('model', None)
+            _update_session_value('model', data['model'])
 
         return jsonify({"status": "success"})
 
