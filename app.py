@@ -9,8 +9,10 @@ from datetime import datetime
 app = Flask(__name__)
 
 # Configure secret key for session encryption
-# In production, this should be set via environment variable
-app.config['SECRET_KEY'] = os.environ.get('FLASK_SECRET_KEY', os.urandom(24).hex())
+# IMPORTANT: Set FLASK_SECRET_KEY environment variable in production
+# to ensure sessions persist across application restarts
+_default_secret = 'dev-secret-key-change-in-production'
+app.config['SECRET_KEY'] = os.environ.get('FLASK_SECRET_KEY', _default_secret)
 
 CONFIG_FILE = 'config.json'
 CONVERSATIONS_FILE = 'conversations.json'
@@ -89,15 +91,20 @@ def settings():
 def api_settings():
     if request.method == 'POST':
         data = request.json or {}
-        api_key = data.get('api_key')
-        model = data.get('model')
-
+        
         # Store API key and model in user session (per-user settings)
+        # Support partial updates: only update fields that are provided
         config = {}
-        if api_key:
-            config['api_key'] = api_key
-        if model:
-            config['model'] = model
+        
+        # Handle API key: accept empty string to clear, or non-empty to set
+        if 'api_key' in data:
+            api_key = data['api_key']
+            if api_key:  # Only save non-empty API keys
+                config['api_key'] = api_key
+        
+        # Handle model: always update if provided
+        if 'model' in data and data['model']:
+            config['model'] = data['model']
         
         save_config(config)
 
