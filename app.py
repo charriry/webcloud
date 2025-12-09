@@ -70,6 +70,8 @@ def save_config(config):
     if 'model' in config:
         if config['model']:
             session['model'] = config['model']
+        else:
+            session.pop('model', None)
 
 def load_conversations_data():
     # Server-side persistence is deprecated; keep for backward compatibility only.
@@ -111,9 +113,14 @@ def api_settings():
                 # Clear API key from session if empty string is provided
                 session.pop('api_key', None)
         
-        # Handle model: always update if provided
-        if 'model' in data and data['model']:
-            session['model'] = data['model']
+        # Handle model: accept empty string to clear, or non-empty to set
+        if 'model' in data:
+            model = data['model']
+            if model:
+                session['model'] = model
+            else:
+                # Clear model from session if empty string is provided
+                session.pop('model', None)
 
         return jsonify({"status": "success"})
 
@@ -162,25 +169,14 @@ def chat():
     client_messages = data.get('messages')  # preferred: full history including the new user msg
     conversation_id = data.get('conversation_id')  # echoed back if provided
 
+    # Load configuration (handles session, env vars, and config file priority)
     config = load_config()
     api_key = config.get('api_key')
     model = config.get('model', 'qwen-turbo')
 
-    # If API key not present in saved settings, try environment variable, then SDK cache
+    # Check if API key is available
     if not api_key:
-        env_key = os.environ.get('ALI_QW_API_KEY')
-        sdk_key = None
-        try:
-            sdk_key = getattr(dashscope, 'api_key', None)
-        except Exception:
-            sdk_key = None
-
-        if env_key:
-            api_key = env_key
-        elif sdk_key:
-            api_key = sdk_key
-        else:
-            return jsonify({"error": "请先在设置页面或环境变量中配置 API Key"}), 400
+        return jsonify({"error": "请先在设置页面或环境变量中配置 API Key"}), 400
 
     dashscope.api_key = api_key
 
